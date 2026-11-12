@@ -1095,7 +1095,7 @@ const Engine = (() => {
       while ((m = re.exec(s))) if (isMsoCond(m[1]) && /<style/i.test(m[2])) return true;
       return false;
     })();
-    const ffVals = []; s.replace(/font-family\s*:\s*([^;}{]+)/gi, (m, v) => { ffVals.push(v.replace(/!important/i, '').trim()); return m; });
+    const ffVals = []; s.replace(/@font-face\s*\{[^}]*\}/gi, '').replace(/font-family\s*:\s*([^;}{]+)/gi, (m, v) => { ffVals.push(v.replace(/!important/i, '').trim()); return m; });
     const fontsLoaded = /<link[^>]+href=["'][^"']*(fonts\.googleapis|typekit|fonts\.bunny|\.woff)/i.test(s) || /@import[^;]*(fonts\.|\.woff)/i.test(s) || /@font-face/i.test(s);
     return {
       core: has(/<meta[^>]+charset/i) && has(/<meta[^>]+name=["']?viewport/i),
@@ -1653,17 +1653,29 @@ const Engine = (() => {
       return finish(res, fixedSeed >>> 0, true);
     }
     let best = null;
+    const why = { invalid: 0, invalidMsg: '', missing: new Map(), similar: 0 };
     const base = (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
     for (let a = 0; a < opts.attempts; a++) {
       const seed = (base + a * 2654435761) >>> 0;
       const res = make(seed);
-      if (validate(res)) continue;
-      if (strong && !Object.values(detectFeatures(res.html)).every(Boolean)) continue;
-      if (savedHashes.has(hash(norm(res.html)))) continue;
+      const bad = validate(res);
+      if (bad) { why.invalid++; if (!why.invalidMsg) why.invalidMsg = bad; continue; }
+      if (strong) {
+        const f = detectFeatures(res.html);
+        const miss = FEATURES.filter(x => !f[x.id]);
+        if (miss.length) { miss.forEach(x => why.missing.set(x.name, (why.missing.get(x.name) || 0) + 1)); continue; }
+      }
+      if (savedHashes.has(hash(norm(res.html)))) { why.similar++; continue; }
+      why.similar++;
       let minD = Infinity;
       for (const m of prev) { const d = distance(res.picks, m); if (d < minD) minD = d; if (minD < opts.minDiff) break; }
       if (minD >= opts.minDiff) return finish(res, seed, false, minD);
       if (!best || minD > best.minD) best = { res, seed, minD };
+    }
+    if (!why.similar) {
+      if (why.invalid >= why.missing.size && why.invalid) return { ok: false, reason: 'invalid', combos, message: 'Every attempt produced code that failed the safety check (' + why.invalidMsg + '). One of the selected heads probably contains CSS the mixer can’t combine. Try mixing without your newest heads to find it.' };
+      const top = [...why.missing.entries()].sort((a, b) => b[1] - a[1])[0];
+      return { ok: false, reason: 'features', combos, message: 'Every attempt was missing a required email feature (' + (top ? top[0] : 'unknown') + '). Try Normal mix, or add a head that includes it.' };
     }
     return { ok: false, reason: 'exhausted', combos, best: best ? best.minD : 0, message: 'No new combination differs from your previous ' + history.length + ' generations by at least ' + opts.minDiff + ' component' + (opts.minDiff === 1 ? '' : 's') + '. The library offers roughly ' + fmtCombos(combos) + ' combinations. Add heads with different components, lower the minimum difference in Settings, or clear old generations.' };
 
