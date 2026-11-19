@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Subscribe</title>
+<style>
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: light;
+  --bg: #eef2f7;
+  --text: #1a2333;
+  --muted: #5b6577;
+  --button-bg: #2340a8;
+  --button-bg-hover: #1b3288;
+  --button-text: #ffffff;
+  --focus: #e8a317;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #10151f;
+    --text: #e4e9f2;
+    --muted: #9aa5b8;
+    --button-bg: #8fb0ff;
+    --button-bg-hover: #b3caff;
+    --button-text: #0d1320;
+    --focus: #f2c14e;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  display: grid;
+  justify-items: center;
+  gap: 1.25rem;
+  width: 100%;
+  max-width: 34rem;
+  text-align: center;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+}
+
+.subscribe {
+  min-width: 11rem;
+  min-height: 3.5rem;
+  padding: 0.85em 2.25em;
+  border: 0;
+  border-radius: 0.875rem;
+  background: var(--button-bg);
+  color: var(--button-text);
+  font-size: clamp(1.125rem, 1rem + 0.8vw, 1.375rem);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: 0 10px 28px -14px var(--button-bg);
+  transition: background-color 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
+}
+
+.subscribe:disabled {
+  opacity: 0.4;
+  cursor: progress;
+  box-shadow: none;
+}
+
+
+@media (hover: hover) {
+  .subscribe:hover:not(:disabled) {
+    background: var(--button-bg-hover);
+  }
+}
+
+.subscribe:active:not(:disabled) {
+  transform: translateY(1px) scale(0.98);
+}
+
+
+.message {
+  max-width: 26ch;
+  margin: 0;
+  font-size: clamp(1.25rem, 1rem + 1.4vw, 1.75rem);
+  font-weight: 500;
+  line-height: 1.4;
+  text-wrap: balance;
+  animation: appear 0.4s ease-out;
+}
+
+.status {
+  min-height: 3em;
+  max-width: 38ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@keyframes appear {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subscribe,
+  .message {
+    transition: none;
+    animation: none;
+  }
+}
+</style>
+</head>
+<body>
+<main class="app">
+  <button id="subscribe" class="subscribe" type="button" disabled>Subscribe</button>
+  <p id="done" class="message" hidden>You have subscribed to all the brands included in this CSV file!</p>
+  <p id="status" class="status" role="status" aria-live="polite">Loading brands…</p>
+</main>
+
+<script>
+'use strict';
+
+// The brand list lives next to this page. Replace brands.csv to update it for everyone.
+const CSV_FILE = 'brands.csv';
+
+// Each person's progress is saved in their own browser under this key.
+const STORAGE_KEY = 'brand-subscribe:opened:v1';
+
+const subscribeButton = document.getElementById('subscribe');
+const doneMessage = document.getElementById('done');
+const statusText = document.getElementById('status');
+
+let allBrands = [];
+let memoryOpened = new Set(); // used only if this browser blocks storage
+let storageWorks = true;
+
+init();
+
+async function init() {
+  let text;
+  try {
+    const response = await fetch(CSV_FILE, { cache: 'no-cache' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    text = await response.text();
+  } catch (error) {
+    console.error(`Could not load ${CSV_FILE}:`, error);
+    subscribeButton.hidden = true;
+    setStatus('The brand list couldn’t be loaded. Open this page from its web address, not by double-clicking the file.');
+    return;
+  }
+
+  allBrands = extractBrands(parseCSV(text));
+  if (allBrands.length === 0) {
+    subscribeButton.hidden = true;
+    setStatus('The brand list is empty. Add brands to brands.csv and publish it again.');
+    return;
+  }
+
+  storageWorks = testStorage();
+  subscribeButton.addEventListener('click', subscribe);
+  window.addEventListener('storage', (event) => {
+    if (event.key === STORAGE_KEY) render(); // progress changed in another tab
+  });
+  render();
+}
+
+// Pick a random brand this person hasn't opened yet, open it, and remember it.
+function subscribe() {
+  const opened = loadOpened(); // re-read so two open tabs never repeat a brand
+  const remaining = allBrands.filter((brand) => !opened.has(brand.key));
+  if (remaining.length === 0) {
+    render();
+    return;
+  }
+
+  const brand = remaining[Math.floor(Math.random() * remaining.length)];
+  const tab = window.open(brand.url, '_blank');
+  if (!tab) {
+    // Pop-up was blocked: don't count it, so the next click can try again.
+    setStatus('Your browser blocked the new tab. Allow pop-ups for this site, then click Subscribe again.');
+    return;
+  }
+  try {
+    tab.opener = null; // the opened site can't control this page
+  } catch (_) { /* ignore */ }
+
+  opened.add(brand.key);
+  saveOpened(opened);
+  render(brand.name);
+}
+
+// Show the button and progress, or the completion message when nothing is left.
+function render(justOpened) {
+  const opened = loadOpened();
+  const left = allBrands.filter((brand) => !opened.has(brand.key)).length;
+
+  if (left === 0) {
+    subscribeButton.hidden = true;
+    doneMessage.hidden = false;
+    setStatus('');
+    return;
+  }
+
+  subscribeButton.hidden = false;
+  subscribeButton.disabled = false;
+  doneMessage.hidden = true;
+
+  let note = justOpened
+    ? `Opened ${justOpened}. ${count(left, 'brand')} left.`
+    : `${count(left, 'brand')} left out of ${allBrands.length.toLocaleString()}.`;
+  if (!storageWorks) {
+    note += ' This browser isn’t saving progress, so it will reset when the page is closed.';
+  }
+  setStatus(note);
+}
+
+function loadOpened() {
+  if (!storageWorks) return new Set(memoryOpened);
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    return new Set(Array.isArray(saved) ? saved : []);
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function saveOpened(opened) {
+  memoryOpened = new Set(opened);
+  if (!storageWorks) return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...opened]));
+  } catch (error) {
+    console.warn('Could not save progress:', error);
+    storageWorks = false;
+  }
+}
+
+function testStorage() {
+  try {
+    const probe = STORAGE_KEY + ':test';
+    localStorage.setItem(probe, '1');
+    localStorage.removeItem(probe);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function setStatus(text) {
+  statusText.textContent = text;
+}
+
+function count(n, word) {
+  return `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+}
+
+// Turn CSV rows into unique { key, name, url } brands with valid URLs.
+function extractBrands(rows) {
+  if (rows.length === 0) return [];
+
+  let nameCol = 0;
+  let urlCol = 1;
+
+  // Use a header row (e.g. "Brand,Website") to find the columns, if there is one.
+  const header = rows[0].map((cell) => cell.toLowerCase());
+  const headerName = header.findIndex((cell) => /brand|name|company/.test(cell));
+  const headerUrl = header.findIndex(
+    (cell, i) => i !== headerName && /url|website|site|link|domain/.test(cell)
+  );
+  if (headerName !== -1 && headerUrl !== -1 && !toSafeUrl(rows[0][headerUrl])) {
+    nameCol = headerName;
+    urlCol = headerUrl;
+    rows = rows.slice(1);
+  }
+
+  const brands = [];
+  const seen = new Set();
+
+  for (const row of rows) {
+    const url = toSafeUrl(row[urlCol]);
+    if (!url) {
+      console.warn(`Skipped "${row[nameCol] || ''}": invalid URL "${row[urlCol] || ''}"`);
+      continue;
+    }
+
+    const name = row[nameCol] || new URL(url).hostname;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue; // each brand only once
+
+    seen.add(key);
+    brands.push({ key, name, url });
+  }
+
+  return brands;
+}
+
+// Return a normalized http(s) URL, or null if the value isn't a usable website address.
+function toSafeUrl(raw) {
+  if (!raw) return null;
+
+  let value = raw.trim();
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(value)) {
+    value = 'https://' + value.replace(/^\/+/, ''); // "nike.com" -> "https://nike.com"
+  }
+
+  try {
+    const url = new URL(value);
+    const isWeb = url.protocol === 'https:' || url.protocol === 'http:';
+    const hasDomain = /\.[a-z\d-]{2,}$/i.test(url.hostname);
+    const noCredentials = !url.username && !url.password;
+    return isWeb && hasDomain && noCredentials ? url.href : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Minimal CSV parser: handles quoted fields, commas and quotes inside quotes, and CRLF line endings.
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+
+  text = text.replace(/^\uFEFF/, ''); // strip byte-order mark
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+
+    if (inQuotes) {
+      if (char === '"' && text[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else if (char === '"') {
+        inQuotes = false;
+      } else {
+        field += char;
+      }
+    } else if (char === '"') {
+      inQuotes = true;
+    } else if (char === ',') {
+      row.push(field);
+      field = '';
+    } else if (char === '\n' || char === '\r') {
+      if (char === '\r' && text[i + 1] === '\n') i++;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+    } else {
+      field += char;
+    }
+  }
+  row.push(field);
+  rows.push(row);
+
+  return rows
+    .map((r) => r.map((cell) => cell.trim()))
+    .filter((r) => r.some((cell) => cell !== ''));
+}
+</script>
+</body>
+</html>
